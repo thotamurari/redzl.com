@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Weak-Password Lab — Vulnerable vs Secure Demo</title>
+<style>
+  :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#60a5fa}
+  *{box-sizing:border-box;font-family:Inter,system-ui,Segoe UI,Roboto,"Helvetica Neue",Arial}
+  body{margin:0;background:linear-gradient(180deg,#071029 0%,#07172a 100%);color:#e6eef6;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .wrap{width:980px;max-width:100%;display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  .card{background:linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0.01));padding:18px;border-radius:12px;box-shadow:0 6px 20px rgba(2,6,23,0.6);border:1px solid rgba(255,255,255,0.02)}
+  h2{margin:0 0 10px;font-size:18px}
+  label{display:block;margin:10px 0 6px;color:var(--muted);font-size:13px}
+  input{width:100%;padding:10px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;color:inherit}
+  .row{display:flex;gap:8px;align-items:center}
+  button{cursor:pointer;padding:10px 12px;border-radius:10px;border:0;background:var(--accent);color:#022; font-weight:600}
+  .small{font-size:13px;color:var(--muted);margin-top:10px}
+  .log{background:#071228;border:1px dashed rgba(255,255,255,0.02);padding:8px;height:140px;overflow:auto;border-radius:8px;font-family:monospace;font-size:13px}
+  .muted{color:var(--muted);font-size:13px}
+  .label-pill{display:inline-block;background:rgba(255,255,255,0.03);padding:6px 10px;border-radius:999px;font-size:12px;margin-left:8px}
+  footer{grid-column:1/-1;margin-top:12px;color:var(--muted);font-size:13px}
+  @media(max-width:820px){.wrap{grid-template-columns:1fr} footer{grid-column:auto}}
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <!-- VULNERABLE -->
+    <div class="card" id="vuln">
+      <h2>VULNERABLE Login (for demo)</h2>
+      <div class="muted">Stores username & password in <code>localStorage</code> in plaintext — demonstrates weak-password exposure.</div>
+
+      <label>Register (creates plaintext user)</label>
+      <input id="vuln-register-username" placeholder="username (e.g., alice)">
+      <input id="vuln-register-password" placeholder="password">
+      <div style="margin-top:8px" class="row">
+        <button id="vuln-register">Register (Insecure)</button>
+        <button id="vuln-clear" style="background:#ef4444;color:white">Clear Stored</button>
+      </div>
+
+      <label style="margin-top:12px">Login</label>
+      <input id="vuln-login-username" placeholder="username">
+      <input id="vuln-login-password" placeholder="password">
+      <div style="margin-top:8px" class="row">
+        <button id="vuln-login">Login</button>
+      </div>
+
+      <div class="small" style="margin-top:12px">Storage key: <code>vuln_users</code></div>
+      <div style="margin-top:8px" class="log" id="vuln-log"></div>
+    </div>
+
+    <!-- SECURE (client-side demo) -->
+    <div class="card" id="secure">
+      <h2>SECURE Demo (client-side PBKDF2)</h2>
+      <div class="muted">Stores a salted derived key (PBKDF2) instead of plaintext. This is a teaching demo — real apps should hash on the server with Argon2/bcrypt and apply rate limits & MFA.</div>
+
+      <label>Register (PBKDF2 + salt)</label>
+      <input id="sec-register-username" placeholder="username (e.g., alice)">
+      <input id="sec-register-password" placeholder="password">
+      <div style="margin-top:8px" class="row">
+        <button id="sec-register">Register (PBKDF2)</button>
+        <button id="sec-clear" style="background:#ef4444;color:white">Clear Stored</button>
+      </div>
+
+      <label style="margin-top:12px">Login</label>
+      <input id="sec-login-username" placeholder="username">
+      <input id="sec-login-password" placeholder="password">
+      <div style="margin-top:8px" class="row">
+        <button id="sec-login">Login</button>
+      </div>
+
+      <div class="small" style="margin-top:12px">Storage key: <code>secure_users</code> (stores base64 salt + base64 derived key)</div>
+      <div style="margin-top:8px" class="log" id="sec-log"></div>
+    </div>
+
+    <footer>
+      <span class="muted">Tips:</span>
+      <span class="label-pill">Vulnerable: plaintext storage, no rate limiting, trivial to exfiltrate</span>
+      <span class="label-pill">Secure demo: uses PBKDF2 + salt, 100,000 iterations (client-side demo only)</span>
+    </footer>
+  </div>
+
+<script>
+/* ---------------------------
+   Helper utilities
+   --------------------------- */
+function log(el, ...msg){
+  el.innerText = (new Date()).toLocaleTimeString() + ' › ' + msg.join(' ') + '\\n' + el.innerText;
+}
+
+/* localStorage helpers */
+function lsGet(key){ try { return JSON.parse(localStorage.getItem(key) || '{}') } catch(e){ return {} } }
+function lsSet(key, obj){ localStorage.setItem(key, JSON.stringify(obj)) }
+
+/* ---------------------------
+   VULNERABLE: plaintext storage
+   --------------------------- */
+(function vulnerableModule(){
+  const UKEY = 'vuln_users'
+  const regUser = document.getElementById('vuln-register-username')
+  const regPass = document.getElementById('vuln-register-password')
+  const loginUser = document.getElementById('vuln-login-username')
+  const loginPass = document.getElementById('vuln-login-password')
+  const logEl = document.getElementById('vuln-log')
+
+  document.getElementById('vuln-register').addEventListener('click', ()=>{
+    const u = regUser.value.trim(), p = regPass.value
+    if(!u||!p){ log(logEl,'register failed: empty'); return }
+    const users = lsGet(UKEY)
+    users[u] = p  // INSECURE: stroing plaintext password
+    lsSet(UKEY, users)
+    log(logEl, 'registered (plaintext):', u)
+    regUser.value=''; regPass.value=''
+  })
+
+  document.getElementById('vuln-login').addEventListener('click', ()=>{
+    const u = loginUser.value.trim(), p = loginPass.value
+    const users = lsGet(UKEY)
+    if(users[u] && users[u] === p){
+      log(logEl, 'login success:', u)
+      alert('VULN LOGIN: success for ' + u)
+    } else {
+      log(logEl, 'login failure for', u)
+      alert('VULN LOGIN: bad credentials')
+    }
+    loginUser.value=''; loginPass.value=''
+  })
+
+  document.getElementById('vuln-clear').addEventListener('click', ()=>{
+    localStorage.removeItem(UKEY)
+    log(logEl, 'cleared stored users')
+  })
+
+  // show current stored (for demo/teaching)
+  log(logEl, 'current stored users (plaintext): ' + JSON.stringify(lsGet(UKEY)))
+})();
+
+/* ---------------------------
+   SECURE demo: PBKDF2 in-browser (teaching-only)
+   --------------------------- */
+(async function secureModule(){
+  const UKEY = 'secure_users'
+  const enc = new TextEncoder()
+  const dec = new TextDecoder()
+  const logEl = document.getElementById('sec-log')
+
+  function bufToBase64(buf){
+    const bytes = new Uint8Array(buf)
+    let str = ''
+    for(let i=0;i<bytes.byteLength;i++) str += String.fromCharCode(bytes[i])
+    return btoa(str)
+  }
+  function base64ToBuf(b64){
+    const str = atob(b64)
+    const buf = new Uint8Array(str.length)
+    for(let i=0;i<str.length;i++) buf[i] = str.charCodeAt(i)
+    return buf.buffer
+  }
+
+  // derive a key (PBKDF2 -> SHA-256) returning ArrayBuffer
+  async function deriveKeyRaw(password, salt, iterations=100000, keyLen=32){
+    // password -> key material
+    const pwKey = await crypto.subtle.importKey(
+      'raw',
+      enc.encode(password),
+      { name: 'PBKDF2' },
+      false,
+      ['deriveBits']
+    )
+    const derived = await crypto.subtle.deriveBits(
+      { name: 'PBKDF2', salt: salt, iterations: iterations, hash: 'SHA-256' },
+      pwKey,
+      keyLen * 8
+    )
+    return derived // ArrayBuffer
+  }
+
+  // Register: create random salt + derived key, store both as base64
+  document.getElementById('sec-register').addEventListener('click', async ()=>{
+    const u = document.getElementById('sec-register-username').value.trim()
+    const p = document.getElementById('sec-register-password').value
+    if(!u || !p){ log(logEl,'register failed: empty'); return }
+
+    const salt = crypto.getRandomValues(new Uint8Array(16)).buffer
+    const derived = await deriveKeyRaw(p, salt, 100000, 32)
+    const users = lsGet(UKEY)
+    users[u] = {
+      salt: bufToBase64(salt),
+      dk: bufToBase64(derived),
+      iter: 100000
+    }
+    lsSet(UKEY, users)
+    log(logEl, 'registered (pbkdf2): ' + u + ' (salt+dk stored)')
+    document.getElementById('sec-register-username').value=''
+    document.getElementById('sec-register-password').value=''
+  })
+
+  // Login: look up salt, derive with provided password, constant-time compare
+  document.getElementById('sec-login').addEventListener('click', async ()=>{
+    const u = document.getElementById('sec-login-username').value.trim()
+    const p = document.getElementById('sec-login-password').value
+    const users = lsGet(UKEY)
+    const rec = users[u]
+    if(!rec){ log(logEl,'login failure (no user): ' + u); alert('SECURE LOGIN: bad credentials'); return }
+
+    const saltBuf = base64ToBuf(rec.salt)
+    const derived = await deriveKeyRaw(p, saltBuf, rec.iter, 32)
+    const derivedB64 = bufToBase64(derived)
+
+    // constant-time style compare (simple)
+    const ok = (derivedB64.length === rec.dk.length) &&
+               Array.from(derivedB64).reduce((a,c,i)=> a | (derivedB64.charCodeAt(i)^rec.dk.charCodeAt(i)), 0) === 0
+
+    if(ok){
+      log(logEl, 'login success: ' + u)
+      alert('SECURE LOGIN: success for ' + u)
+    } else {
+      log(logEl, 'login failure: ' + u)
+      alert('SECURE LOGIN: bad credentials')
+    }
+    document.getElementById('sec-login-username').value=''
+    document.getElementById('sec-login-password').value=''
+  })
+
+  document.getElementById('sec-clear').addEventListener('click', ()=>{
+    localStorage.removeItem(UKEY)
+    log(logEl, 'cleared secure_users')
+  })
+
+  log(logEl, 'secure demo ready (PBKDF2, 100k iterations).')
+})();
+</script>
+</body>
+</html>
